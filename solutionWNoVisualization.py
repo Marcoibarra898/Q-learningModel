@@ -18,6 +18,8 @@ class Robot(ap.Agent):
         self.q_table = {}
         self.steps_in_epoch = 0
         self.epoch_durations = []
+        self.current_epoch_path = []
+        self.last_epoch_path = []
         
     def step(self):
         self.epsilon = self.model.p.epsilon
@@ -30,9 +32,12 @@ class Robot(ap.Agent):
             action = self.model.random.choice([(0, 1), (0, -1), (1, 0), (-1, 0)])
         else:
             q_values = {a: self.q_table.get((state, a), 0) for a in [(0, 1), (0, -1), (1, 0), (-1, 0)]}
-            max_q = max(q_values.values())
-            best_actions = [a for a, q in q_values.items() if q == max_q]
-            action = self.model.random.choice(best_actions)
+            if not q_values:
+                action = self.model.random.choice([(0, 1), (0, -1), (1, 0), (-1, 0)])
+            else:
+                max_q = max(q_values.values())
+                best_actions = [a for a, q in q_values.items() if q == max_q]
+                action = self.model.random.choice(best_actions)
         
         self.action = action
         
@@ -40,7 +45,10 @@ class Robot(ap.Agent):
         old_q = self.q_table.get((old_state, action), 0)
         
         next_q_values = {a: self.q_table.get((new_state, a), 0) for a in [(0, 1), (0, -1), (1, 0), (-1, 0)]}
-        max_next_q = max(next_q_values.values())
+        if not next_q_values:
+            max_next_q = 0
+        else:
+            max_next_q = max(next_q_values.values())
         
         new_q = old_q + ALPHA * (reward + GAMMA * max_next_q - old_q)
         self.q_table[(old_state, action)] = new_q
@@ -53,8 +61,8 @@ class WarehouseModel(ap.Model):
         self.grid = ap.Grid(self, self.grid_size, track_empty=True)
         
         self.warehouse_map = np.zeros(self.grid_size, dtype=int)
-        self.warehouse_map[0:5, 0:5] = 1   
-        self.warehouse_map[25:30, 25:30] = 2 
+        self.warehouse_map[0:5, 0:5] = 1
+        self.warehouse_map[25:30, 25:30] = 2
         self.warehouse_map[9:25, 5:8] = -1
         self.warehouse_map[9:25, 14:17] = -1
         self.warehouse_map[3:17, 22:25] = -1
@@ -79,7 +87,8 @@ class WarehouseModel(ap.Model):
             old_state = (old_pos, agent.has_cargo)
             action = agent.action
             
-            
+          
+            agent.current_epoch_path.append(old_pos)
             agent.steps_in_epoch += 1
             
             next_pos_x, next_pos_y = old_pos[0] + action[0], old_pos[1] + action[1]
@@ -103,13 +112,14 @@ class WarehouseModel(ap.Model):
                 
             new_pos = tuple(self.grid.positions[agent])
             
-       
             if self.warehouse_map[new_pos] == (2 if agent.has_cargo else 1):
                 reward = 100
                 
-                
+              
                 agent.epoch_durations.append(agent.steps_in_epoch)
-                agent.steps_in_epoch = 0 
+                agent.steps_in_epoch = 0
+                agent.last_epoch_path = list(agent.current_epoch_path)
+                agent.current_epoch_path = []
                 
                 if not agent.has_cargo:
                     agent.has_cargo = True
@@ -117,36 +127,22 @@ class WarehouseModel(ap.Model):
                     agent.has_cargo = False
             
             new_state = (new_pos, agent.has_cargo)
-            
             agent.learn(old_state, action, reward, new_state)
 
     def update(self):
- 
+        # Deshabilitar la animación en cada paso
         pass
         
-    def end(self):
-        plt.show()
-        
-        
-        plt.figure(figsize=(12, 8))
-        for i, agent in enumerate(self.agents):
-            plt.plot(agent.epoch_durations, label=f'Agente {i+1}')
 
-        plt.title('Duración de las épocas de los agentes a lo largo del tiempo')
-        plt.xlabel('Número de Época')
-        plt.ylabel('Duración de la Época (pasos)')
-        plt.legend()
-        plt.grid(True)
-        plt.show()
-        
     def custom_cmap(self):
         from matplotlib.colors import ListedColormap, BoundaryNorm
-        colors = ['red', 'white', 'blue', 'green', 'purple']
-        bounds = [-1.5, -0.5, 0.5, 1.5, 2.5, 3.5]
+        colors = ['red', 'white', 'blue', 'green']
+        bounds = [-1.5, -0.5, 0.5, 1.5, 2.5]
         cmap = ListedColormap(colors)
         norm = BoundaryNorm(bounds, cmap.N)
         return cmap
 
 # Ejecutar simulación
-model = WarehouseModel()
-results = model.run(steps=200000)
+if __name__ == '__main__':
+    model = WarehouseModel()
+    results = model.run(steps=200000)
