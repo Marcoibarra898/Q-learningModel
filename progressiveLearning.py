@@ -5,22 +5,22 @@ import random
 from matplotlib.animation import FuncAnimation
 from matplotlib.colors import ListedColormap, BoundaryNorm
 import pickle
-        
+import os
 
-# ----------- PARÁMETROS DE Q-LEARNING -----------
+# ----------- PARAMETROS DE Q-LEARNING -----------
 ALPHA = 0.2
 GAMMA = 0.95
-EPSILON_START = 0.5 
-EPSILON_DECAY = 0.9995  
+EPSILON_START = 0.5
+EPSILON_DECAY = 0.9995
 EPSILON_MIN = 0.01
 
-# ----------- PARÁMETROS DE LA SIMULACIÓN -----------
-ERROR_PROBABILITY = 0.0005 
-ERROR_COOLDOWN_STEPS = 50 
-LOW_BATTERY_THRESHOLD = 30 # Umbral de batería para ir a recargar
-BATTERY_DEPLETION_PER_STEP = 0.2 # Consumo de batería por movimiento
-BATTERY_IDLE_DEPLETION = 0.05 # Consumo de batería por estar inmóvil
-BATTERY_RECHARGE_RATE = 2.0 # Velocidad de recarga por paso
+# ----------- PARAMETROS DE LA SIMULACION -----------
+ERROR_PROBABILITY = 0.0005
+ERROR_COOLDOWN_STEPS = 50
+LOW_BATTERY_THRESHOLD = 30
+BATTERY_DEPLETION_PER_STEP = 0.2
+BATTERY_IDLE_DEPLETION = 0.05
+BATTERY_RECHARGE_RATE = 2.0
 
 # ----------- AGENTE -----------
 class Robot(ap.Agent):
@@ -35,11 +35,10 @@ class Robot(ap.Agent):
         self.epoch_durations = []
         self.current_epoch_path = []
         self.last_epoch_path = []
-        self.battery_history = [100] # Nuevo: Historial de la batería
-        self.error_incidents = 0 # Nuevo: Contador de fallos
+        self.battery_history = [100]
+        self.error_incidents = 0
         
     def step(self):
-        # Manejo del estado de falla y recarga
         if self.status == 'in_error':
             if self.error_cooldown_timer > 0:
                 self.error_cooldown_timer -= 1
@@ -50,7 +49,6 @@ class Robot(ap.Agent):
                 self.action = (0, 0)
             return
         
-        # Lógica de toma de decisiones y consumo de batería
         self.epsilon = self.model.p.epsilon
         
         if self.battery_level <= 0:
@@ -58,7 +56,6 @@ class Robot(ap.Agent):
             self.action = (0, 0)
             return
         
-        # Manejo de recarga
         if self.current_task == 'recharge' and self.battery_level < 100:
             self.action = (0, 0)
             self.battery_level = min(100, self.battery_level + BATTERY_RECHARGE_RATE)
@@ -111,7 +108,14 @@ class WarehouseModel(ap.Model):
         self.agents = ap.AgentList(self, self.n_agents, Robot)
         
         self.dynamic_walls = True
-        self.q_table = {}
+        
+        if os.path.exists('q_table.pkl'):
+            with open('q_table.pkl', 'rb') as f:
+                self.q_table = pickle.load(f)
+            print("Tabla Q cargada. Reanudando entrenamiento...")
+        else:
+            self.q_table = {}
+            print("No se encontro tabla Q. Iniciando entrenamiento desde cero...")
         
         self.create_new_map()
         
@@ -175,10 +179,10 @@ class WarehouseModel(ap.Model):
             if agent.status == 'normal' and self.random.random() < ERROR_PROBABILITY:
                 agent.status = 'in_error'
                 agent.has_cargo = False
-                agent.error_incidents += 1 # Contar la incidencia
+                agent.error_incidents += 1
             
             if agent.status == 'normal' and agent.current_task != 'recharge' and agent.battery_level < LOW_BATTERY_THRESHOLD:
-                print(f"Agente {agent.id} tiene batería baja. Tarea de recarga asignada.")
+                print(f"Agente {agent.id} tiene bateria baja. Tarea de recarga asignada.")
                 agent.current_task = 'recharge'
 
         planned_moves = {}
@@ -351,47 +355,42 @@ class WarehouseModel(ap.Model):
                     break
     
     def end(self):
-        # 1. Gráfica de Duración de las Épocas
+        with open('q_table.pkl', 'wb') as f:
+            pickle.dump(self.q_table, f)
+        print("Tabla Q guardada en 'q_table.pkl'")
+        
         plt.figure(figsize=(12, 8))
         for i, agent in enumerate(self.agents):
             plt.plot(agent.epoch_durations, label=f'Agente {i+1}')
-        plt.title('Duración de las Épocas de los agentes a lo largo del tiempo')
-        plt.xlabel('Número de Época')
-        plt.ylabel('Duración de la Época (pasos)')
+        plt.title('Duracion de las Epocas de los agentes a lo largo del tiempo')
+        plt.xlabel('Numero de Epoca')
+        plt.ylabel('Duracion de la Epoca (pasos)')
         plt.legend()
         plt.grid(True)
         plt.show()
 
-        # 2. Gráfica de Nivel de Batería de los Agentes
         plt.figure(figsize=(12, 8))
         for i, agent in enumerate(self.agents):
             plt.plot(agent.battery_history, label=f'Agente {i+1}')
-        plt.title('Nivel de Batería de los agentes a lo largo de la simulación')
-        plt.xlabel('Pasos de la simulación')
-        plt.ylabel('Nivel de Batería (%)')
+        plt.title('Nivel de Bateria de los agentes a lo largo de la simulacion')
+        plt.xlabel('Pasos de la simulacion')
+        plt.ylabel('Nivel de Bateria (%)')
         plt.legend()
         plt.grid(True)
         plt.show()
 
-        # 3. Gráfica de Incidencias de Fallos
         plt.figure(figsize=(10, 6))
         agent_names = [f'Agente {i+1}' for i in range(len(self.agents))]
         error_counts = [agent.error_incidents for agent in self.agents]
         plt.bar(agent_names, error_counts, color='skyblue')
-        plt.title('Número de Fallos por Agente')
+        plt.title('Numero de Fallos por Agente')
         plt.xlabel('Agente')
-        plt.ylabel('Número de Fallos')
+        plt.ylabel('Numero de Fallos')
         plt.grid(axis='y', linestyle='--')
         plt.show()
 
-        # Visualización de la última época
         self.visualize_last_epoch()
-        
-        with open('q_table.pkl', 'wb') as f:
-            pickle.dump(self.q_table, f)
-            
-        print("Tabla Q guardada en 'q_table.pkl'")
-        
+
     def visualize_last_epoch(self):
         fig, ax = plt.subplots(figsize=(10, 10))
 
@@ -400,7 +399,7 @@ class WarehouseModel(ap.Model):
         
         points = [ax.plot([], [], 'o', markersize=10, label=f'Agente {i+1}')[0] for i in range(len(self.agents))]
         
-        ax.set_title('Última Época de los Agentes (completa)')
+        ax.set_title('Ultima Epoca de los Agentes (completa)')
         ax.set_xlabel('Coordenada X')
         ax.set_ylabel('Coordenada Y')
         ax.legend()
@@ -421,7 +420,7 @@ class WarehouseModel(ap.Model):
             ani = FuncAnimation(fig, update, frames=max_path_length, interval=50, blit=False, repeat=False)
             plt.show()
         else:
-            print("No hay datos de la última época completa para visualizar.")
+            print("No hay datos de la ultima epoca completa para visualizar.")
         
     def custom_cmap(self):
         colors = ['red', 'white', 'blue', 'green', 'yellow', 'orange', 'purple']
@@ -430,7 +429,7 @@ class WarehouseModel(ap.Model):
         norm = BoundaryNorm(bounds, cmap.N)
         return cmap
 
-# Ejecutar simulación
+# Ejecutar simulacion
 if __name__ == '__main__':
     model = WarehouseModel()
     results = model.run(steps=500000)
