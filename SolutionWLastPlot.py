@@ -5,13 +5,12 @@ import random
 from matplotlib.animation import FuncAnimation
 from matplotlib.colors import ListedColormap, BoundaryNorm
 import pickle
-        
 
 # ----------- PARÁMETROS DE Q-LEARNING -----------
 ALPHA = 0.2
 GAMMA = 0.95
 EPSILON_START = 0.5 
-EPSILON_DECAY = 0.9995  
+EPSILON_DECAY = 0.995  # Decaimiento del 0.5% por cada época completada
 EPSILON_MIN = 0.01
 
 # ----------- PARÁMETROS DE LA SIMULACIÓN -----------
@@ -35,8 +34,8 @@ class Robot(ap.Agent):
         self.epoch_durations = []
         self.current_epoch_path = []
         self.last_epoch_path = []
-        self.battery_history = [100] # Nuevo: Historial de la batería
-        self.error_incidents = 0 # Nuevo: Contador de fallos
+        self.battery_history = [100]
+        self.error_incidents = 0
         
     def step(self):
         # Manejo del estado de falla y recarga
@@ -169,13 +168,12 @@ class WarehouseModel(ap.Model):
         return self.grid.positions[agent]
 
     def step(self):
-        self.p.epsilon = max(EPSILON_MIN, self.p.epsilon * EPSILON_DECAY)
         
         for agent in self.agents:
             if agent.status == 'normal' and self.random.random() < ERROR_PROBABILITY:
                 agent.status = 'in_error'
                 agent.has_cargo = False
-                agent.error_incidents += 1 # Contar la incidencia
+                agent.error_incidents += 1
             
             if agent.status == 'normal' and agent.current_task != 'recharge' and agent.battery_level < LOW_BATTERY_THRESHOLD:
                 print(f"Agente {agent.id} tiene batería baja. Tarea de recarga asignada.")
@@ -200,6 +198,8 @@ class WarehouseModel(ap.Model):
             if not (0 <= next_pos[0] < self.grid_size[0] and 0 <= next_pos[1] < self.grid_size[1] and self.warehouse_map[next_pos] != -1):
                 move['reward'] = -100
                 move['next_pos'] = old_pos
+            elif next_pos == old_pos:
+                move['reward'] = -10 
             
             for other_agent, other_move in planned_moves.items():
                 if agent != other_agent:
@@ -226,16 +226,8 @@ class WarehouseModel(ap.Model):
             old_dist = np.abs(current_agent_pos_np - target_pos_np).sum()
             new_dist = np.abs(next_pos_np - target_pos_np).sum()
             
-            if new_dist < old_dist:
-                reward += 10
-            elif new_dist > old_dist:
-                reward -= 10
-            
-            if agent.has_cargo and self.warehouse_map[next_pos] == 1 and agent.current_task != 'deliver_cargo':
-                reward = -50
-            elif not agent.has_cargo and self.warehouse_map[next_pos] == 2 and agent.current_task != 'get_main_cargo':
-                reward = -50
-            
+            reward += (old_dist - new_dist) * 5
+
             if old_pos == next_pos and agent.battery_level <= 0:
                 reward = -500
 
@@ -265,6 +257,8 @@ class WarehouseModel(ap.Model):
                     agent.last_epoch_path = list(agent.current_epoch_path)
                     agent.current_epoch_path = []
                     agent.has_cargo = False
+                    
+                    self.p.epsilon = max(EPSILON_MIN, self.p.epsilon * EPSILON_DECAY)
                     
                     if agent.battery_level < LOW_BATTERY_THRESHOLD:
                         agent.current_task = 'recharge'
@@ -433,4 +427,4 @@ class WarehouseModel(ap.Model):
 # Ejecutar simulación
 if __name__ == '__main__':
     model = WarehouseModel()
-    results = model.run(steps=500000)
+    results = model.run(steps=50000) # Aumenta los pasos para un mejor entrenamiento

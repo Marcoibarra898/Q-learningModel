@@ -432,4 +432,4 @@ class WarehouseModel(ap.Model):
 # Ejecutar simulacion
 if __name__ == '__main__':
     model = WarehouseModel()
-    results = model.run(steps=500000)
+    results = model.run(steps=50000)
