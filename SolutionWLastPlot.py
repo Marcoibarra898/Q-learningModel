@@ -36,6 +36,13 @@ class Robot(ap.Agent):
         self.last_epoch_path = []
         self.battery_history = [100]
         self.error_incidents = 0
+        # Individual Q-table for each agent
+        self.q_table = {}
+        # Position history to prevent oscillation
+        self.position_history = []
+        self.max_history_length = 10
+        # Task assignment tracking
+        self.assigned_task_id = None
         
     def step(self):
         # Manejo del estado de falla y recarga
@@ -73,10 +80,24 @@ class Robot(ap.Agent):
         if random.random() < self.epsilon:
             action = self.model.random.choice([(0, 1), (0, -1), (1, 0), (-1, 0)])
         else:
-            q_values = {a: self.model.q_table.get((state, a), 0) for a in [(0, 1), (0, -1), (1, 0), (-1, 0)]}
+            q_values = {a: self.q_table.get((state, a), 0) for a in [(0, 1), (0, -1), (1, 0), (-1, 0)]}
             max_q = max(q_values.values())
             best_actions = [a for a, q in q_values.items() if q == max_q]
             action = self.model.random.choice(best_actions)
+        
+        # Prevent oscillation by avoiding recently visited positions
+        next_pos = (current_pos[0] + action[0], current_pos[1] + action[1])
+        if next_pos in self.position_history[-3:]:  # Avoid last 3 positions
+            # Choose a different action that doesn't lead to recent positions
+            available_actions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+            safe_actions = []
+            for alt_action in available_actions:
+                alt_next_pos = (current_pos[0] + alt_action[0], current_pos[1] + alt_action[1])
+                if alt_next_pos not in self.position_history[-3:]:
+                    safe_actions.append(alt_action)
+            
+            if safe_actions:
+                action = self.model.random.choice(safe_actions)
         
         self.action = action
         
@@ -91,13 +112,13 @@ class Robot(ap.Agent):
             return 'empty'
             
     def learn(self, old_state, action, reward, new_state):
-        old_q = self.model.q_table.get((old_state, action), 0)
+        old_q = self.q_table.get((old_state, action), 0)
         
-        next_q_values = {a: self.model.q_table.get((new_state, a), 0) for a in [(0, 1), (0, -1), (1, 0), (-1, 0)]}
+        next_q_values = {a: self.q_table.get((new_state, a), 0) for a in [(0, 1), (0, -1), (1, 0), (-1, 0)]}
         max_next_q = max(next_q_values.values()) if next_q_values else 0
         
         new_q = old_q + ALPHA * (reward + GAMMA * max_next_q - old_q)
-        self.model.q_table[(old_state, action)] = new_q
+        self.q_table[(old_state, action)] = new_q
 
 # ----------- MODELO -----------
 class WarehouseModel(ap.Model):
@@ -110,7 +131,14 @@ class WarehouseModel(ap.Model):
         self.agents = ap.AgentList(self, self.n_agents, Robot)
         
         self.dynamic_walls = True
-        self.q_table = {}
+        # Task assignment tracking to prevent overlapping
+        self.assigned_tasks = {
+            'get_main_cargo': set(),
+            'get_shelf_cargo': set(),
+            'deliver_cargo': set(),
+            'recharge': set()
+        }
+        self.task_locations = {}  # Track which agents are assigned to specific locations
         
         self.create_new_map()
         
@@ -124,12 +152,52 @@ class WarehouseModel(ap.Model):
         self.grid.add_agents(self.agents, initial_positions)
 
         for agent in self.agents:
-            agent.current_task = 'get_main_cargo'
             agent.has_cargo = False
             agent.status = 'normal'
             agent.battery_level = 100
+            # Assign initial task to prevent overlapping
+            self.assign_task(agent)
         
         self.p.epsilon = EPSILON_START
+    
+    def assign_task(self, agent):
+        """Assign a task to an agent, avoiding conflicts with other agents"""
+        # Remove agent from current task assignment
+        if agent.assigned_task_id:
+            self.assigned_tasks[agent.current_task].discard(agent.assigned_task_id)
+            if agent.assigned_task_id in self.task_locations:
+                del self.task_locations[agent.assigned_task_id]
+        
+        # Determine available tasks based on agent state
+        available_tasks = []
+        
+        if agent.battery_level < LOW_BATTERY_THRESHOLD:
+            available_tasks = ['recharge']
+        elif agent.has_cargo:
+            available_tasks = ['deliver_cargo']
+        else:
+            # Check for available cargo tasks
+            if len(self.assigned_tasks['get_main_cargo']) < 2:  # Max 2 agents on main cargo
+                available_tasks.append('get_main_cargo')
+            if len(self.assigned_tasks['get_shelf_cargo']) < 2:  # Max 2 agents on shelf cargo
+                available_tasks.append('get_shelf_cargo')
+        
+        if not available_tasks:
+            # If no specific tasks available, assign randomly
+            available_tasks = ['get_main_cargo', 'get_shelf_cargo']
+        
+        # Choose task
+        chosen_task = self.random.choice(available_tasks)
+        
+        # Generate unique task ID
+        task_id = f"{agent.id}_{chosen_task}_{self.random.randint(1000, 9999)}"
+        
+        # Assign task
+        agent.current_task = chosen_task
+        agent.assigned_task_id = task_id
+        self.assigned_tasks[chosen_task].add(task_id)
+        
+        return task_id
             
     def _get_target_pos(self, agent):
         if agent.status == 'in_error':
@@ -174,10 +242,16 @@ class WarehouseModel(ap.Model):
                 agent.status = 'in_error'
                 agent.has_cargo = False
                 agent.error_incidents += 1
+                # Remove from task assignments when in error
+                if agent.assigned_task_id:
+                    self.assigned_tasks[agent.current_task].discard(agent.assigned_task_id)
+                    if agent.assigned_task_id in self.task_locations:
+                        del self.task_locations[agent.assigned_task_id]
+                    agent.assigned_task_id = None
             
             if agent.status == 'normal' and agent.current_task != 'recharge' and agent.battery_level < LOW_BATTERY_THRESHOLD:
                 print(f"Agente {agent.id} tiene batería baja. Tarea de recarga asignada.")
-                agent.current_task = 'recharge'
+                self.assign_task(agent)
 
         planned_moves = {}
         for agent in self.agents:
@@ -235,6 +309,11 @@ class WarehouseModel(ap.Model):
             new_pos = tuple(self.grid.positions[agent])
             agent.current_epoch_path.append(new_pos)
             
+            # Update position history to prevent oscillation
+            agent.position_history.append(new_pos)
+            if len(agent.position_history) > agent.max_history_length:
+                agent.position_history.pop(0)
+            
             if agent.status == 'in_error':
                 if self.warehouse_map[new_pos] == 4:
                     reward = 200
@@ -245,7 +324,10 @@ class WarehouseModel(ap.Model):
             elif agent.current_task == 'recharge':
                 if self.warehouse_map[new_pos] == 5 and agent.battery_level >= 100:
                     reward = 150
-                    agent.current_task = self.random.choice(['get_main_cargo', 'get_shelf_cargo'])
+                    # Complete recharge task and assign new task
+                    if agent.assigned_task_id:
+                        self.assigned_tasks['recharge'].discard(agent.assigned_task_id)
+                    self.assign_task(agent)
                 elif self.warehouse_map[new_pos] == 5 and agent.battery_level < 100:
                     reward = 50
 
@@ -260,22 +342,32 @@ class WarehouseModel(ap.Model):
                     
                     self.p.epsilon = max(EPSILON_MIN, self.p.epsilon * EPSILON_DECAY)
                     
-                    if agent.battery_level < LOW_BATTERY_THRESHOLD:
-                        agent.current_task = 'recharge'
-                    else:
-                        agent.current_task = self.random.choice(['get_main_cargo', 'get_shelf_cargo'])
+                    # Complete delivery task and assign new task
+                    if agent.assigned_task_id:
+                        self.assigned_tasks['deliver_cargo'].discard(agent.assigned_task_id)
+                    self.assign_task(agent)
 
             elif agent.current_task == 'get_main_cargo':
                 if self.warehouse_map[new_pos] == 1 and not agent.has_cargo:
                     reward = 100
                     agent.has_cargo = True
+                    # Complete cargo pickup task and assign delivery task
+                    if agent.assigned_task_id:
+                        self.assigned_tasks['get_main_cargo'].discard(agent.assigned_task_id)
                     agent.current_task = 'deliver_cargo'
+                    agent.assigned_task_id = f"{agent.id}_deliver_cargo_{self.random.randint(1000, 9999)}"
+                    self.assigned_tasks['deliver_cargo'].add(agent.assigned_task_id)
             
             elif agent.current_task == 'get_shelf_cargo':
                 if self.warehouse_map[new_pos] == 3 and not agent.has_cargo:
                     reward = 100
                     agent.has_cargo = True
+                    # Complete cargo pickup task and assign delivery task
+                    if agent.assigned_task_id:
+                        self.assigned_tasks['get_shelf_cargo'].discard(agent.assigned_task_id)
                     agent.current_task = 'deliver_cargo'
+                    agent.assigned_task_id = f"{agent.id}_deliver_cargo_{self.random.randint(1000, 9999)}"
+                    self.assigned_tasks['deliver_cargo'].add(agent.assigned_task_id)
 
             new_state = (new_pos, agent.has_cargo, agent.current_task, agent.status, agent.get_battery_range())
             agent.learn(old_state, action, reward, new_state)
@@ -381,10 +473,15 @@ class WarehouseModel(ap.Model):
         # Visualización de la última época
         self.visualize_last_epoch()
         
-        with open('q_table.pkl', 'wb') as f:
-            pickle.dump(self.q_table, f)
+        # Save individual Q-tables for each agent
+        agent_q_tables = {}
+        for i, agent in enumerate(self.agents):
+            agent_q_tables[f'agent_{i}'] = agent.q_table
             
-        print("Tabla Q guardada en 'q_table.pkl'")
+        with open('q_table.pkl', 'wb') as f:
+            pickle.dump(agent_q_tables, f)
+            
+        print("Tablas Q individuales guardadas en 'q_table.pkl'")
         
     def visualize_last_epoch(self):
         fig, ax = plt.subplots(figsize=(10, 10))
@@ -427,4 +524,4 @@ class WarehouseModel(ap.Model):
 # Ejecutar simulación
 if __name__ == '__main__':
     model = WarehouseModel()
-    results = model.run(steps=50000) # Aumenta los pasos para un mejor entrenamiento
+    results = model.run(steps=500000) # Aumenta los pasos para un mejor entrenamiento
